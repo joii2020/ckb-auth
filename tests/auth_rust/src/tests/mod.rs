@@ -268,6 +268,7 @@ fn bitcoin_pubkey_recid_verify() {
         verify_unit(&config),
         "failed conver btc",
         &[
+            AuthErrorCodeType::InvalidArg as i32,
             AuthErrorCodeType::Mismatched as i32,
             AuthErrorCodeType::ErrorWrongState as i32,
         ],

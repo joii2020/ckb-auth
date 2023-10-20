@@ -83,7 +83,7 @@ exit:
 static int _recover_secp256k1_pubkey(const uint8_t *sig, size_t sig_len,
                                      const uint8_t *msg, size_t msg_len,
                                      uint8_t *out_pubkey,
-                                     size_t *out_pubkey_size, bool compressed) {
+                                     size_t *out_pubkey_size, int recid, bool compressed) {
     int ret = 0;
 
     if (sig_len != SECP256K1_SIGNATURE_SIZE) {
@@ -101,14 +101,9 @@ static int _recover_secp256k1_pubkey(const uint8_t *sig, size_t sig_len,
         return ret;
     }
 
-    int recid = sig[RECID_INDEX];
-    if (recid > 0x1b) {
-        recid = (recid - 0x1b) & 3;
-    }
-
     secp256k1_ecdsa_recoverable_signature signature;
     if (secp256k1_ecdsa_recoverable_signature_parse_compact(
-            &context, &signature, sig, recid) == 0) {
+            &context, &signature, sig, (int)recid) == 0) {
         return ERROR_WRONG_STATE;
     }
 
@@ -149,8 +144,22 @@ static int _recover_secp256k1_pubkey_btc(const uint8_t *sig, size_t sig_len,
     }
 
     // change 1
-    int recid = (sig[0] - 27) & 3;
-    bool comp = ((sig[0] - 27) & 4) != 0;
+    // Refer to: https://en.bitcoin.it/wiki/BIP_0137
+    int recid = sig[0];
+
+    bool comp = false;
+    if (recid >= 27 && recid <= 30) {  // P2PKH uncompressed
+        recid = recid - 27;
+    } else if (recid >= 31 && recid <= 34) {  // P2PKH compressed
+        recid = recid - 31;
+        comp = true;
+    } else if (recid >= 35 && recid <= 38) {  // Segwit P2SH
+        recid = recid - 35;
+    } else if (recid >= 39 && recid <= 42) {  // Segwit Bech32
+        recid = recid - 39;
+    } else {
+        return ERROR_INVALID_ARG;
+    }
 
     /* Load signature */
     secp256k1_context context;
@@ -198,8 +207,8 @@ int validate_signature_ckb(void *prefilled_data, const uint8_t *sig,
     }
     uint8_t out_pubkey[SECP256K1_PUBKEY_SIZE];
     size_t out_pubkey_size = SECP256K1_PUBKEY_SIZE;
-    ret = _recover_secp256k1_pubkey(sig, sig_len, msg, msg_len, out_pubkey,
-                                    &out_pubkey_size, true);
+
+    ret = _recover_secp256k1_pubkey(sig, sig_len, msg, msg_len, out_pubkey, &out_pubkey_size, sig[RECID_INDEX], true);
     if (ret != 0) return ret;
 
     blake2b_state ctx;
@@ -222,8 +231,18 @@ int validate_signature_eth(void *prefilled_data, const uint8_t *sig,
     }
     uint8_t out_pubkey[UNCOMPRESSED_SECP256K1_PUBKEY_SIZE];
     size_t out_pubkey_size = UNCOMPRESSED_SECP256K1_PUBKEY_SIZE;
-    ret = _recover_secp256k1_pubkey(sig, sig_len, msg, msg_len, out_pubkey,
-                                    &out_pubkey_size, false);
+
+    // Refer to https://eips.ethereum.org/EIPS/eip-155
+    int recid = sig[RECID_INDEX];
+    if ((recid >= 0 && recid <= 3)) {
+        ;
+    } else if (recid >= 27 && recid <= 42) {
+        recid = (recid - 27) / 4;
+    } else {
+        return ERROR_INVALID_ARG;
+    }
+
+    ret = _recover_secp256k1_pubkey(sig, sig_len, msg, msg_len, out_pubkey, &out_pubkey_size, recid, false);
     if (ret != 0) return ret;
 
     // here are the 2 differences than validate_signature_secp256k1
