@@ -1,9 +1,9 @@
-use crate::{BlockChain, BlockChainArgs};
-use anyhow::{anyhow, Error};
-use auth_c_tests::{
+use crate::tx::{
     auth_builder, debug_printer, gen_tx_scripts_verifier, gen_tx_with_pub_key_hash,
     get_message_to_sign, set_signature, DummyDataLoader, TestConfig, MAX_CYCLES,
 };
+use crate::{BlockChain, BlockChainArgs};
+use anyhow::{anyhow, Error};
 use ckb_auth_types::{AuthAlgorithmIdType, EntryCategoryType};
 use clap::{arg, ArgMatches, Command};
 use hex::{decode, encode};

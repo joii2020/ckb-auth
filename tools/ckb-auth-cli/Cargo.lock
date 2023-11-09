@@ -362,52 +362,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "auth_c_tests"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base58-monero",
- "base64 0.21.2",
- "bincode",
- "bitcoin",
- "blake2b-rs 0.1.5",
- "bs58 0.5.0",
- "ckb-auth-types",
- "ckb-chain-spec",
- "ckb-crypto",
- "ckb-error",
- "ckb-hash",
- "ckb-script",
- "ckb-traits",
- "ckb-types",
- "ckb-vm",
- "clap 4.3.19",
- "dyn-clone",
- "hex",
- "hex-literal 0.4.1",
- "lazy_static",
- "log",
- "mbedtls",
- "monero",
- "once_cell",
- "p256",
- "rand 0.6.5",
- "ref_thread_local",
- "ripple-keypairs",
- "secp256k1 0.22.2",
- "serde",
- "serde_json",
- "sha2 0.10.7",
- "sha3 0.9.1",
- "solana-cli-output",
- "solana-sdk",
- "sparse-merkle-tree",
- "tempdir",
- "tiny-keccak",
- "which",
-]
-
-[[package]]
 name = "autocfg"
 version = "0.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -581,12 +535,6 @@ name = "blake2b-ref"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "95916998c798756098a4eb1b3f2cd510659705a9817bf203d61abd30fbec3e7b"
-
-[[package]]
-name = "blake2b-ref"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "294d17c72e0ba59fad763caa112368d0672083779cdebbb97164f4bb4c1e339a"
 
 [[package]]
 name = "blake2b-rs"
@@ -794,12 +742,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "buddy-alloc"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f0d2da64a6a895d5a7e0724882825d50f83c13396b1b9f1878e19a024bab395"
-
-[[package]]
 name = "bumpalo"
 version = "3.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -927,32 +869,50 @@ name = "ckb-auth-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "auth_c_tests",
  "base58-monero",
  "base64 0.21.2",
+ "bincode",
+ "bitcoin",
+ "blake2b-rs 0.1.5",
  "bs58 0.5.0",
  "ckb-auth-types",
+ "ckb-chain-spec",
+ "ckb-crypto",
+ "ckb-error",
  "ckb-hash",
  "ckb-script",
+ "ckb-traits",
  "ckb-types",
  "ckb-vm",
  "clap 4.3.19",
+ "dyn-clone",
  "hex",
+ "hex-literal 0.4.1",
  "lazy_static",
+ "log",
  "mbedtls",
  "monero",
+ "once_cell",
+ "p256",
+ "rand 0.6.5",
+ "ref_thread_local",
+ "ripple-keypairs",
+ "secp256k1 0.22.2",
+ "serde",
  "serde_json",
  "sha2 0.10.7",
+ "sha3 0.9.1",
+ "solana-cli-output",
+ "solana-sdk",
+ "sparse-merkle-tree",
+ "tempdir",
+ "tiny-keccak",
+ "which",
 ]
 
 [[package]]
 name = "ckb-auth-types"
 version = "0.1.0"
-dependencies = [
- "ckb-std",
- "hex",
- "log",
-]
 
 [[package]]
 name = "ckb-chain-spec"
@@ -1067,7 +1027,7 @@ version = "0.111.0-rc2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94e5d1be7bfe0794ce0737775e76a021e8687413cd282f8ae1019e12d9b072f4"
 dependencies = [
- "blake2b-ref 0.2.1",
+ "blake2b-ref",
  "blake2b-rs 0.2.0",
 ]
 
@@ -1186,28 +1146,6 @@ dependencies = [
  "ckb-vm",
  "faster-hex",
  "serde",
-]
-
-[[package]]
-name = "ckb-standalone-types"
-version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b5c776d70eb4f60a22a3180857646d77b2da8d33c0c4a063ad9f6610fc94609f"
-dependencies = [
- "blake2b-ref 0.3.1",
- "cfg-if 1.0.0",
- "molecule",
-]
-
-[[package]]
-name = "ckb-std"
-version = "0.14.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2a08518aa0fd4ce069d3ec80b63dcd3d6543ad3805ad1c0b4e1d8e4d38f8a9fc"
-dependencies = [
- "buddy-alloc",
- "cc",
- "ckb-standalone-types",
 ]
 
 [[package]]

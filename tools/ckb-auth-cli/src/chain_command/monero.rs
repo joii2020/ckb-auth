@@ -1,12 +1,12 @@
 extern crate monero as monero_rs;
 
-use crate::{utils::decode_string, BlockChain, BlockChainArgs};
-use anyhow::{anyhow, Error};
-use auth_c_tests::{
+use crate::tx::{
     auth_builder, build_resolved_tx, debug_printer, gen_tx_scripts_verifier,
     gen_tx_with_pub_key_hash, get_message_to_sign, set_signature, DummyDataLoader, MoneroAuth,
     TestConfig, MAX_CYCLES,
 };
+use crate::{utils::decode_string, BlockChain, BlockChainArgs};
+use anyhow::{anyhow, Error};
 use ckb_auth_types::{AuthAlgorithmIdType, EntryCategoryType};
 
 use ckb_types::bytes::{BufMut, BytesMut};

@@ -1,6 +1,8 @@
 mod auth_script;
 mod utils;
 
+pub mod tx;
+
 pub mod chain_command;
 
 use anyhow::Error;
