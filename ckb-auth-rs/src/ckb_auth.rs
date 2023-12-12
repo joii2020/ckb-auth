@@ -1,6 +1,8 @@
 extern crate alloc;
 
 use crate::{CkbAuthError, CkbAuthType, CkbEntryType, EntryCategoryType};
+use alloc::alloc::{alloc, Layout};
+use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::ffi::CString;
 use alloc::format;
@@ -12,8 +14,10 @@ use ckb_std::{
     ckb_types::core::ScriptHashType,
     dynamic_loading_c_impl::{CKBDLContext, Library, Symbol},
 };
-use core::mem::size_of_val;
+use core::mem::{size_of, size_of_val};
 use hex::encode;
+
+use ckb_std::debug;
 
 pub fn ckb_auth(
     entry: &CkbEntryType,
@@ -74,7 +78,7 @@ fn ckb_auth_exec(
     Ok(())
 }
 
-type DLContext = CKBDLContext<[u8; 512 * 1024]>;
+type DLContext = CKBDLContext<[u8; 128 * 1024]>;
 type CkbAuthValidate = unsafe extern "C" fn(
     auth_algorithm_id: u8,
     signature: *const u8,
@@ -88,7 +92,7 @@ type CkbAuthValidate = unsafe extern "C" fn(
 const EXPORTED_FUNC_NAME: &str = "ckb_auth_validate";
 
 struct CKBDLLoader {
-    pub context: DLContext,
+    pub context: Box<DLContext>,
     pub context_used: usize,
     pub loaded_lib: BTreeMap<[u8; 33], Library>,
 }
@@ -109,7 +113,20 @@ impl CKBDLLoader {
 
     fn new() -> Self {
         Self {
-            context: unsafe { DLContext::new() },
+            context: {
+                // let ckb_align: usize = 4096;
+                let layout =
+                    Layout::from_size_align(size_of::<DLContext>(), 4096).expect("Invalid layout");
+                let ctx = unsafe { alloc(layout) };
+                let ctx2 = unsafe { alloc(layout) };
+                debug!(
+                    "--- context size: 0x{:x?}, ctx addr: 0x{:x?}, 0x{:x?}",
+                    size_of::<DLContext>(),
+                    ctx as usize, ctx2 as usize
+                );
+                unsafe { Box::from_raw(ctx as *mut DLContext) }
+            },
+            // context: Box::new(unsafe { DLContext::new() }),
             context_used: 0,
             loaded_lib: BTreeMap::new(),
         }
@@ -120,24 +137,34 @@ impl CKBDLLoader {
         code_hash: &[u8; 32],
         hash_type: ScriptHashType,
     ) -> Result<&Library, CkbAuthError> {
+        debug!("--- getlib mk1 ---");
         let mut lib_key = [0u8; 33];
         lib_key[..32].copy_from_slice(code_hash);
         lib_key[32] = hash_type as u8;
 
+        debug!("--- getlib mk2 ---");
         let has_lib = match self.loaded_lib.get(&lib_key) {
             Some(_) => true,
             None => false,
         };
 
+        debug!("--- getlib mk3 ---");
         if !has_lib {
-            let size = size_of_val(&self.context);
-            let lib = self
+            let size = size_of_val(&*self.context);
+
+            let res = self
                 .context
-                .load_with_offset(code_hash, hash_type, self.context_used, size)
-                .map_err(|_| CkbAuthError::LoadDLError)?;
+                .load_with_offset(code_hash, hash_type, self.context_used, size);
+
+            if res.is_err() {
+                debug!("---- getlib load with offse res: {:?}", res.as_ref().err());
+            }
+
+            let lib = res.map_err(|_| CkbAuthError::LoadDLError)?;
             self.context_used += lib.consumed_size();
             self.loaded_lib.insert(lib_key.clone(), lib);
         };
+        debug!("--- getlib mk4 ---");
         Ok(self.loaded_lib.get(&lib_key).unwrap())
     }
 
@@ -163,13 +190,16 @@ fn ckb_auth_dl(
     signature: &[u8],
     message: &[u8; 32],
 ) -> Result<(), CkbAuthError> {
+    debug!("--- dl mk 1 ---");
     let func: Symbol<CkbAuthValidate> = CKBDLLoader::get().get_validate_func(
         &entry.code_hash,
         entry.hash_type,
         EXPORTED_FUNC_NAME,
     )?;
 
+    debug!("--- dl mk 2 ---");
     let mut pub_key = id.pubkey_hash.clone();
+    debug!("--- dl mk 3 ---");
     let rc_code = unsafe {
         func(
             id.algorithm_id.clone().into(),
@@ -182,6 +212,7 @@ fn ckb_auth_dl(
         )
     };
 
+    debug!("--- dl mk 4 ---");
     match rc_code {
         0 => Ok(()),
         _ => Err(CkbAuthError::RunDLError),

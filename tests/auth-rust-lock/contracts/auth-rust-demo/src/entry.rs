@@ -20,17 +20,21 @@ use ckb_std::{
     high_level::{load_script, load_witness_args},
 };
 
-// use ckb_std::debug;
+use ckb_std::debug;
 
 pub fn main() -> Result<(), Error> {
+    debug!("-- begin --");
     let mut pubkey_hash = [0u8; 20];
     let auth_id: u8;
     let entry_type: u8;
     let hash_type: ScriptHashType;
     let mut code_hash = [0u8; 32];
 
+    debug!("-- mk 1 --");
+
     // get message
     let message = generate_sighash_all().map_err(|_| Error::GeneratedMsgError)?;
+    debug!("-- mk 2 --");
     let signature = {
         let script = load_script()?;
         let args: Bytes = script.args().unpack();
@@ -44,6 +48,7 @@ pub fn main() -> Result<(), Error> {
             0 => ScriptHashType::Data,
             1 => ScriptHashType::Type,
             2 => ScriptHashType::Data1,
+            4 => ScriptHashType::Data2,
             _ => {
                 return Err(Error::ArgsError);
             }
@@ -59,11 +64,13 @@ pub fn main() -> Result<(), Error> {
             .raw_data()
     };
 
+    debug!("-- mk 3 --");
     let id = CkbAuthType {
         algorithm_id: AuthAlgorithmIdType::try_from(auth_id).map_err(|f| CkbAuthError::from(f))?,
         pubkey_hash: pubkey_hash,
     };
 
+    debug!("-- mk 4 --");
     let entry = CkbEntryType {
         code_hash,
         hash_type,
@@ -72,8 +79,13 @@ pub fn main() -> Result<(), Error> {
             .unwrap(),
     };
 
-    ckb_auth(&entry, &id, &signature, &message)?;
-    ckb_auth(&entry, &id, &signature, &message)?;
+    debug!("-- mk 5 ckb_auth, entry_type: {} --", entry_type);
+    let r = ckb_auth(&entry, &id, &signature, &message);
+    // ckb_auth(&entry, &id, &signature, &message)?;
+
+    debug!("-- end ckb_auth res:{:?} --", r);
+    r?;
+    // ckb_auth(&entry, &id, &signature, &message)?;
 
     Ok(())
 }

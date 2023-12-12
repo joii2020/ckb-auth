@@ -10,7 +10,7 @@ default = []
 ckb2023 = ["ckb-std/ckb2023"]
 
 [dependencies]
-ckb-std = "0.14.3"
+ckb-std = { path = "/Volumes/workspack/code/ckb/ckb-std" }
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
 hex = { version = "0.4.3", default-features = false, features = ["alloc"]}
