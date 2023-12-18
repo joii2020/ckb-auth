@@ -1,5 +1,4 @@
 use ckb_chain_spec::consensus::ConsensusBuilder;
-use ckb_crypto::secp::{Generator, Privkey};
 use ckb_error::Error;
 use ckb_script::{TransactionScriptsVerifier, TxVerifyEnv};
 use ckb_traits::{CellDataProvider, ExtensionProvider, HeaderProvider};
@@ -16,86 +15,28 @@ use ckb_types::{
     prelude::*,
     H256,
 };
-use dyn_clone::{clone_trait_object, DynClone};
-use hex;
 use log::{Metadata, Record};
 use rand::{distributions::Standard, thread_rng, Rng};
-use secp256k1;
 use serde::{Deserialize, Serialize};
-use sha3::{Digest, Keccak256};
-use std::{collections::HashMap, convert::TryInto, mem::size_of, process::Stdio, result, vec};
+use std::{collections::HashMap, convert::TryInto, mem::size_of, vec};
 
-use ckb_auth_rs::{AuthAlgorithmIdType, CkbAuthType, EntryCategoryType};
-use lazy_static::lazy_static;
-use std::{
-    process::{Child, Command},
-    sync::Arc,
-};
-use tempdir::TempDir;
+use ckb_auth_rs::{AuthAlgorithmIdType, CkbAuthType};
+use std::sync::Arc;
+
+pub mod test_config;
+use test_config::*;
+
+pub mod on_chain_script;
+use on_chain_script::*;
+
+pub mod auth;
+pub use auth::*;
 
 mod tests;
-
-type BtcNetwork = bitcoin::Network;
 
 pub const MAX_CYCLES: u64 = std::u64::MAX;
 pub const SIGNATURE_SIZE: usize = 65;
 pub const RNG_SEED: u64 = 42;
-pub const SOLANA_MAXIMUM_UNWRAPPED_SIGNATURE_SIZE: usize = 510;
-pub const SOLANA_MAXIMUM_WRAPPED_SIGNATURE_SIZE: usize =
-    SOLANA_MAXIMUM_UNWRAPPED_SIGNATURE_SIZE + 2;
-
-lazy_static! {
-    pub static ref ORIGINAL_AUTH_PROGRAM: Bytes =
-        Bytes::from(&include_bytes!("../../../build/auth")[..]);
-    pub static ref LIBECC_AUTH_PROGRAM: Bytes =
-        Bytes::from(&include_bytes!("../../../build/auth_libecc")[..]);
-    pub static ref AUTH_C_LOCK: Bytes =
-        Bytes::from(&include_bytes!("../../../build/auth_c_lock")[..]);
-    pub static ref AUTH_RUST_LOCK: Bytes =
-        Bytes::from(&include_bytes!("../../../build/auth-rust-demo")[..]);
-    pub static ref AUTH_C_LOCK_DISABLE_DL: Bytes =
-        Bytes::from(&include_bytes!("../../../build/auth_c_lock_disable_dl")[..]);
-    pub static ref SECP256K1_DATA_BIN: Bytes =
-        Bytes::from(&include_bytes!("../../../build/secp256k1_data_20210801")[..]);
-    pub static ref ALWAYS_SUCCESS: Bytes =
-        Bytes::from(&include_bytes!("../../../build/always_success")[..]);
-}
-
-pub mod auth_program {
-    use ckb_types::bytes::Bytes;
-    use ref_thread_local::ref_thread_local;
-    use ref_thread_local::RefThreadLocal;
-
-    #[derive(Clone, Copy, Debug)]
-    pub enum AuthProgramType {
-        Original,
-        Libecc,
-    }
-
-    ref_thread_local! {
-        static managed PROGRAM_TO_USE: AuthProgramType = AuthProgramType::Original;
-    }
-
-    pub fn get_auth_program() -> &'static Bytes {
-        match *PROGRAM_TO_USE.borrow() {
-            AuthProgramType::Original => &crate::ORIGINAL_AUTH_PROGRAM,
-            AuthProgramType::Libecc => &crate::LIBECC_AUTH_PROGRAM,
-        }
-    }
-
-    fn set_program(t: AuthProgramType) {
-        let mut p = PROGRAM_TO_USE.borrow_mut();
-        *p = t;
-    }
-
-    pub fn use_original() {
-        set_program(AuthProgramType::Original)
-    }
-
-    pub fn use_libecc() {
-        set_program(AuthProgramType::Libecc)
-    }
-}
 
 fn _dbg_print_mem(data: &Vec<u8>, name: &str) {
     print!("rustdbg {}: (size:{})\n", name, data.len());
@@ -396,44 +337,28 @@ fn append_cells_deps<R: Rng>(
     config: &TestConfig,
     rng: &mut R,
 ) -> (Capacity, TransactionBuilder) {
-    let sighash_all_out_point = append_cell_deps(
-        dummy,
-        rng,
-        match &config.auth_lock_type {
-            TestConfigAuthLockType::C => &AUTH_C_LOCK,
-            TestConfigAuthLockType::Rust => &AUTH_RUST_LOCK,
-            TestConfigAuthLockType::CDisableDl => &AUTH_C_LOCK_DISABLE_DL,
-            TestConfigAuthLockType::Rand(auth_bin) => auth_bin,
-        },
-    );
-    let sighash_dl_out_point = append_cell_deps(dummy, rng, &auth_program::get_auth_program());
-    let always_success_out_point = append_cell_deps(dummy, rng, &ALWAYS_SUCCESS);
-    let secp256k1_data_out_point = append_cell_deps(dummy, rng, &SECP256K1_DATA_BIN);
-
     // setup default tx builder
     let dummy_capacity = Capacity::shannons(42);
     let tx_builder = TransactionBuilder::default()
         .cell_dep(
             CellDep::new_builder()
-                .out_point(sighash_all_out_point)
+                .out_point(append_cell_deps(
+                    dummy,
+                    rng,
+                    config.auth_lock_type.get_bin(),
+                ))
                 .dep_type(DepType::Code.into())
                 .build(),
         )
         .cell_dep(
             CellDep::new_builder()
-                .out_point(sighash_dl_out_point)
+                .out_point(append_cell_deps(dummy, rng, &ALWAYS_SUCCESS))
                 .dep_type(DepType::Code.into())
                 .build(),
         )
         .cell_dep(
             CellDep::new_builder()
-                .out_point(always_success_out_point)
-                .dep_type(DepType::Code.into())
-                .build(),
-        )
-        .cell_dep(
-            CellDep::new_builder()
-                .out_point(secp256k1_data_out_point)
+                .out_point(append_cell_deps(dummy, rng, &SECP256K1_DATA_BIN))
                 .dep_type(DepType::Code.into())
                 .build(),
         )
@@ -443,6 +368,42 @@ fn append_cells_deps<R: Rng>(
                 .build(),
         )
         .output_data(Bytes::new().pack());
+
+    let tx_builder = if config.load_all_auth {
+        tx_builder
+            .cell_dep(
+                CellDep::new_builder()
+                    .out_point(append_cell_deps(
+                        dummy,
+                        rng,
+                        &on_chain_script::ORIGINAL_AUTH_PROGRAM,
+                    ))
+                    .dep_type(DepType::Code.into())
+                    .build(),
+            )
+            .cell_dep(
+                CellDep::new_builder()
+                    .out_point(append_cell_deps(
+                        dummy,
+                        rng,
+                        &on_chain_script::LIBECC_AUTH_PROGRAM,
+                    ))
+                    .dep_type(DepType::Code.into())
+                    .build(),
+            )
+    } else {
+        tx_builder.cell_dep(
+            CellDep::new_builder()
+                .out_point(append_cell_deps(
+                    dummy,
+                    rng,
+                    config.auth_script_type.get_bin(),
+                ))
+                .dep_type(DepType::Code.into())
+                .build(),
+        )
+    };
+
     (dummy_capacity, tx_builder)
 }
 
@@ -458,7 +419,7 @@ pub fn gen_tx_with_pub_key_hash(
 
     gen_tx_with_grouped_args(
         dummy,
-        vec![(lock_args, config.sign_size as usize)],
+        vec![(lock_args, config.inputs_size as usize)],
         config,
         &mut rng,
     )
@@ -470,7 +431,7 @@ pub fn gen_tx(dummy: &mut DummyDataLoader, config: &TestConfig) -> TransactionVi
     let mut rng = thread_rng();
     gen_tx_with_grouped_args(
         dummy,
-        vec![(lock_args, config.sign_size as usize)],
+        vec![(lock_args, config.inputs_size as usize)],
         config,
         &mut rng,
     )
@@ -484,12 +445,7 @@ pub fn gen_tx_with_grouped_args<R: Rng>(
 ) -> TransactionView {
     let (dummy_capacity, mut tx_builder) = append_cells_deps(dummy, config, rng);
 
-    let sighash_all_cell_data_hash = CellOutput::calc_data_hash(match &config.auth_lock_type {
-        TestConfigAuthLockType::C => &AUTH_C_LOCK,
-        TestConfigAuthLockType::Rust => &AUTH_RUST_LOCK,
-        TestConfigAuthLockType::CDisableDl => &AUTH_C_LOCK_DISABLE_DL,
-        TestConfigAuthLockType::Rand(auth_bin) => auth_bin,
-    });
+    let sighash_all_cell_data_hash = CellOutput::calc_data_hash(config.auth_lock_type.get_bin());
 
     let sighash_all_cell_hash_type = ScriptHashType::Data2;
 
@@ -537,58 +493,6 @@ struct EntryType {
     entry_category: u8,
 }
 
-#[derive(PartialEq, Eq)]
-pub enum TestConfigIncorrectSing {
-    None,
-    Bigger,
-    Smaller,
-}
-
-#[derive(PartialEq, Eq)]
-pub enum TestConfigAuthLockType {
-    C,
-    Rust,
-    CDisableDl,
-    Rand(Bytes),
-}
-
-pub struct TestConfig {
-    pub auth: Box<dyn Auth>,
-    pub entry_category_type: EntryCategoryType,
-
-    pub sign_size: i32,
-
-    pub incorrect_pubkey: bool,
-    pub incorrect_msg: bool,
-    pub incorrect_sign: bool,
-    pub incorrect_sign_size: TestConfigIncorrectSing,
-
-    pub auth_lock_type: TestConfigAuthLockType,
-    // pub auth_bin: Option<Bytes>,
-    pub script_hash_type: Option<u8>,
-}
-
-impl TestConfig {
-    pub fn new(
-        auth: &Box<dyn Auth>,
-        entry_category_type: EntryCategoryType,
-        sign_size: i32,
-    ) -> TestConfig {
-        assert!(sign_size > 0);
-        TestConfig {
-            auth: auth.clone(),
-            entry_category_type,
-            sign_size,
-            incorrect_pubkey: false,
-            incorrect_msg: false,
-            incorrect_sign: false,
-            incorrect_sign_size: TestConfigIncorrectSing::None,
-            auth_lock_type: TestConfigAuthLockType::C,
-            script_hash_type: None,
-        }
-    }
-}
-
 pub fn gen_args(config: &TestConfig) -> Bytes {
     do_gen_args(config, None)
 }
@@ -598,6 +502,9 @@ pub fn gen_args_with_pub_key_hash(config: &TestConfig, pub_key_hash: Vec<u8>) ->
 }
 
 pub fn do_gen_args(config: &TestConfig, pub_key_hash: Option<Vec<u8>>) -> Bytes {
+    if config.custom_args {
+        return config.auth.custom_args();
+    }
     let mut ckb_auth_type = CkbAuthType {
         algorithm_id: config
             .auth
@@ -637,7 +544,7 @@ pub fn do_gen_args(config: &TestConfig, pub_key_hash: Option<Vec<u8>>) -> Bytes 
     }
 
     let sighash_all_cell_data_hash: Byte32 =
-        CellOutput::calc_data_hash(&auth_program::get_auth_program());
+        CellOutput::calc_data_hash(&config.auth_script_type.get_bin());
     entry_type
         .code_hash
         .copy_from_slice(sighash_all_cell_data_hash.as_slice());
@@ -760,1285 +667,6 @@ pub fn assert_script_error_i(err: Error, err_code: i32) {
         error_string,
         err_code
     );
-}
-
-pub trait Auth: DynClone {
-    fn get_pub_key_hash(&self) -> Vec<u8>; // result size must is 20
-    fn get_algorithm_type(&self) -> u8;
-
-    fn convert_message(&self, message: &[u8; 32]) -> H256 {
-        H256::from(message.clone())
-    }
-    fn sign(&self, msg: &H256) -> Bytes;
-    fn message(&self) -> Bytes {
-        Bytes::new()
-    }
-    fn get_sign_size(&self) -> usize {
-        SIGNATURE_SIZE
-    }
-}
-
-pub fn auth_builder(t: AuthAlgorithmIdType, official: bool) -> result::Result<Box<dyn Auth>, i32> {
-    match t {
-        AuthAlgorithmIdType::Ckb => {
-            return Ok(CKbAuth::new());
-        }
-        AuthAlgorithmIdType::Ethereum => {
-            return Ok(EthereumAuth::new());
-        }
-        AuthAlgorithmIdType::Eos => {
-            return Ok(EosAuth::new());
-        }
-        AuthAlgorithmIdType::Tron => {
-            return Ok(TronAuth::new());
-        }
-        AuthAlgorithmIdType::Bitcoin => {
-            return Ok(BitcoinAuth::new());
-        }
-        AuthAlgorithmIdType::Dogecoin => {
-            return Ok(DogecoinAuth::new());
-        }
-        AuthAlgorithmIdType::CkbMultisig => {}
-        AuthAlgorithmIdType::Schnorr => {
-            return Ok(SchnorrAuth::new());
-        }
-        AuthAlgorithmIdType::Rsa => {
-            panic!("unsupport rsa")
-        }
-        AuthAlgorithmIdType::Iso97962 => {}
-        AuthAlgorithmIdType::Litecoin => {
-            return Ok(LitecoinAuth::new_official(official));
-        }
-        AuthAlgorithmIdType::Cardano => {
-            panic!("unsupport cardano")
-        }
-        AuthAlgorithmIdType::Monero => {
-            return Ok(MoneroAuth::new());
-        }
-        AuthAlgorithmIdType::Solana => {
-            return Ok(SolanaAuth::new());
-        }
-        AuthAlgorithmIdType::Ripple => {
-            return Ok(RippleAuth::new());
-        }
-        AuthAlgorithmIdType::Secp256r1 => {
-            return Ok(Secp256r1Auth::new());
-        }
-        AuthAlgorithmIdType::OwnerLock => {
-            return Ok(OwnerLockAuth::new());
-        }
-    }
-    assert!(false);
-    Err(1)
-}
-clone_trait_object!(Auth);
-
-#[derive(Clone)]
-pub struct CKbAuth {
-    pub privkey: Privkey,
-}
-impl CKbAuth {
-    fn generator_key() -> Privkey {
-        Generator::random_privkey()
-    }
-    fn new() -> Box<dyn Auth> {
-        Box::new(CKbAuth {
-            privkey: CKbAuth::generator_key(),
-        })
-    }
-    fn get_ckb_pub_key_hash(privkey: &Privkey) -> Vec<u8> {
-        let pub_key = privkey.pubkey().expect("pubkey").serialize();
-        let pub_hash = ckb_hash::blake2b_256(pub_key.as_slice());
-        Vec::from(&pub_hash[0..20])
-    }
-    pub fn ckb_sign(msg: &H256, privkey: &Privkey) -> Bytes {
-        let sig = privkey.sign_recoverable(&msg).expect("sign").serialize();
-        Bytes::from(sig)
-    }
-}
-impl Auth for CKbAuth {
-    fn get_pub_key_hash(&self) -> Vec<u8> {
-        CKbAuth::get_ckb_pub_key_hash(&self.privkey)
-    }
-    fn get_algorithm_type(&self) -> u8 {
-        AuthAlgorithmIdType::Ckb as u8
-    }
-    fn sign(&self, msg: &H256) -> Bytes {
-        CKbAuth::ckb_sign(msg, &self.privkey)
-    }
-}
-
-#[derive(Clone)]
-pub struct EthereumAuth {
-    pub privkey: secp256k1::SecretKey,
-    pub pubkey: secp256k1::PublicKey,
-
-    pub chain_id: Option<u8>,
-    pub recid: Option<u8>,
-    pub recid_add_27: bool,
-}
-impl EthereumAuth {
-    fn new() -> Box<EthereumAuth> {
-        let generator: secp256k1::Secp256k1<secp256k1::All> = secp256k1::Secp256k1::new();
-        let mut rng = thread_rng();
-        let (privkey, pubkey) = generator.generate_keypair(&mut rng);
-        Box::new(EthereumAuth {
-            privkey,
-            pubkey,
-            chain_id: None,
-            recid: None,
-            recid_add_27: false,
-        })
-    }
-    pub fn get_eth_pub_key_hash(pubkey: &secp256k1::PublicKey) -> Vec<u8> {
-        let pubkey = pubkey.serialize_uncompressed();
-        let mut hasher = Keccak256::new();
-        hasher.update(&pubkey[1..].to_vec());
-        let r = hasher.finalize().as_slice().to_vec();
-
-        Vec::from(&r[12..])
-    }
-    pub fn eth_sign(msg: &H256, privkey: &secp256k1::SecretKey) -> Bytes {
-        let secp: secp256k1::Secp256k1<secp256k1::All> = secp256k1::Secp256k1::gen_new();
-        let msg = secp256k1::Message::from_slice(msg.as_bytes()).unwrap();
-        let sign = secp.sign_ecdsa_recoverable(&msg, privkey);
-        let (rid, sign) = sign.serialize_compact();
-
-        let mut data = [0; 65];
-        data[0..64].copy_from_slice(&sign[0..64]);
-        data[64] = rid.to_i32() as u8;
-        let sign = ckb_crypto::secp::Signature::from_slice(&data).unwrap();
-        Bytes::from(sign.serialize())
-    }
-}
-impl Auth for EthereumAuth {
-    fn get_pub_key_hash(&self) -> Vec<u8> {
-        EthereumAuth::get_eth_pub_key_hash(&self.pubkey)
-    }
-    fn get_algorithm_type(&self) -> u8 {
-        AuthAlgorithmIdType::Ethereum as u8
-    }
-    fn convert_message(&self, message: &[u8; 32]) -> H256 {
-        let eth_prefix: &[u8; 28] = b"\x19Ethereum Signed Message:\n32";
-        let mut hasher = Keccak256::new();
-        hasher.update(eth_prefix);
-        hasher.update(message);
-        let r = hasher.finalize();
-        let ret = H256::from_slice(r.as_slice()).expect("convert_keccak256_hash");
-        ret
-    }
-    fn sign(&self, msg: &H256) -> Bytes {
-        let mut sign = Self::eth_sign(msg, &self.privkey).to_vec();
-
-        if self.chain_id.is_some() {
-            sign[64] = sign.get(64).unwrap().clone() + self.chain_id.as_ref().unwrap() * 2 + 35;
-        } else if self.recid.is_some() {
-            sign[64] = self.recid.as_ref().unwrap().clone();
-        } else if self.recid_add_27 {
-            sign[64] += 27;
-        }
-
-        Bytes::from(sign)
-    }
-}
-
-#[derive(Clone)]
-pub struct EosAuth(BitcoinAuth);
-impl EosAuth {
-    fn new() -> Box<dyn Auth> {
-        Box::new(Self {
-            0: BitcoinAuth::default(),
-        })
-    }
-}
-impl Auth for EosAuth {
-    fn get_pub_key_hash(&self) -> Vec<u8> {
-        let privkey = Privkey::from_slice(&self.0.secret_key);
-        let pub_key = privkey.pubkey().expect("pubkey");
-        let pub_key_vec: Vec<u8> = match self.0.v_type {
-            BitcoinSignVType::P2PKHUncompressed => {
-                let mut temp: BytesMut = BytesMut::with_capacity(65);
-                temp.put_u8(4);
-                temp.put(Bytes::from(pub_key.as_bytes().to_vec()));
-                temp.freeze().to_vec()
-            }
-            BitcoinSignVType::P2PKHCompressed => pub_key.serialize(),
-            _ => {
-                panic!("Unsupport")
-            }
-        };
-
-        ckb_hash::blake2b_256(pub_key_vec)[..20].to_vec()
-    }
-    fn get_algorithm_type(&self) -> u8 {
-        AuthAlgorithmIdType::Eos as u8
-    }
-    fn convert_message(&self, message: &[u8; 32]) -> H256 {
-        H256::from(message.clone())
-    }
-    fn sign(&self, msg: &H256) -> Bytes {
-        self.0.sign(msg)
-    }
-}
-
-#[derive(Clone)]
-pub struct TronAuth {
-    pub privkey: secp256k1::SecretKey,
-    pub pubkey: secp256k1::PublicKey,
-}
-impl TronAuth {
-    fn new() -> Box<dyn Auth> {
-        let generator: secp256k1::Secp256k1<secp256k1::All> = secp256k1::Secp256k1::new();
-        let mut rng = thread_rng();
-        let (privkey, pubkey) = generator.generate_keypair(&mut rng);
-        Box::new(TronAuth { privkey, pubkey })
-    }
-}
-impl Auth for TronAuth {
-    fn get_pub_key_hash(&self) -> Vec<u8> {
-        EthereumAuth::get_eth_pub_key_hash(&self.pubkey)
-    }
-    fn get_algorithm_type(&self) -> u8 {
-        AuthAlgorithmIdType::Tron as u8
-    }
-    fn convert_message(&self, message: &[u8; 32]) -> H256 {
-        let eth_prefix: &[u8; 24] = b"\x19TRON Signed Message:\n32";
-        let mut hasher = Keccak256::new();
-        hasher.update(eth_prefix);
-        hasher.update(message);
-        let r = hasher.finalize();
-        H256::from_slice(r.as_slice()).expect("convert_keccak256_hash")
-    }
-    fn sign(&self, msg: &H256) -> Bytes {
-        EthereumAuth::eth_sign(msg, &self.privkey)
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum BitcoinSignVType {
-    P2PKHUncompressed,
-    P2PKHCompressed,
-    SegwitP2SH,
-    SegwitBech32,
-}
-impl Default for BitcoinSignVType {
-    fn default() -> Self {
-        Self::P2PKHCompressed
-    }
-}
-
-#[derive(Clone)]
-pub struct BitcoinAuth {
-    pub secret_key: [u8; 32],
-    pub v_type: BitcoinSignVType,
-    pub btc_network: BtcNetwork,
-}
-impl Default for BitcoinAuth {
-    fn default() -> Self {
-        Self::new_rng_key(BitcoinSignVType::default(), BtcNetwork::Testnet)
-    }
-}
-impl BitcoinAuth {
-    pub fn new() -> Box<BitcoinAuth> {
-        Box::new(Self::new_rng_key(
-            BitcoinSignVType::default(),
-            BtcNetwork::Testnet,
-        ))
-    }
-
-    pub fn new_rng_key(v_type: BitcoinSignVType, btc_network: BtcNetwork) -> Self {
-        let mut rng = thread_rng();
-        let mut secret_key = [0u8; 32];
-        rng.fill(&mut secret_key);
-
-        BitcoinAuth {
-            secret_key,
-            v_type,
-            btc_network,
-        }
-    }
-
-    pub fn get_btc_pub_key_hash(
-        secret_key: &[u8; 32],
-        v_type: BitcoinSignVType,
-        btc_network: BtcNetwork,
-    ) -> Vec<u8> {
-        use bitcoin::secp256k1::ffi::types::AlignedType;
-        use bitcoin::secp256k1::{Secp256k1, SecretKey};
-
-        let secret_key = SecretKey::from_slice(secret_key).unwrap();
-
-        let mut buf = vec![AlignedType::zeroed(); Secp256k1::preallocate_size()];
-        let secp = Secp256k1::preallocated_new(&mut buf).unwrap();
-        let mut pubkey = bitcoin::PublicKey::new(secret_key.public_key(&secp));
-
-        match v_type {
-            BitcoinSignVType::P2PKHUncompressed => {
-                pubkey.compressed = false;
-                calculate_ripemd160(&calculate_sha256(&pubkey.to_bytes())).to_vec()
-            }
-            BitcoinSignVType::P2PKHCompressed => {
-                pubkey.compressed = true;
-                calculate_ripemd160(&calculate_sha256(&pubkey.to_bytes())).to_vec()
-            }
-            BitcoinSignVType::SegwitP2SH => {
-                // Ripemd160(Sha256([00, 20, Ripemd160(Sha256(Compressed Public key))]))
-
-                let address = bitcoin::Address::p2shwpkh(&pubkey, btc_network).unwrap();
-                let address_str = address.to_string();
-                let rc = bs58::decode(address_str).into_vec().unwrap()[1..21].to_vec();
-                rc
-            }
-            BitcoinSignVType::SegwitBech32 => {
-                let address = bitcoin::Address::p2wpkh(&pubkey, btc_network).unwrap();
-                let address_str = address.to_string();
-
-                use core::str::FromStr;
-                bitcoin::Address::from_str(&address_str)
-                    .unwrap()
-                    .payload
-                    .script_pubkey()
-                    .as_bytes()[2..]
-                    .to_vec()
-            }
-        }
-    }
-    pub fn btc_convert_message(message: &[u8; 32]) -> H256 {
-        let message_magic = b"\x18Bitcoin Signed Message:\n\x40";
-        let msg_hex = hex::encode(message);
-        assert_eq!(msg_hex.len(), 64);
-
-        let mut temp2: BytesMut = BytesMut::with_capacity(message_magic.len() + msg_hex.len());
-        temp2.put(Bytes::from(message_magic.to_vec()));
-        temp2.put(Bytes::from(hex::encode(message)));
-
-        let msg = calculate_sha256(&temp2);
-        let msg = calculate_sha256(&msg);
-
-        H256::from(msg)
-    }
-    pub fn btc_sign(msg: &H256, secret_key: &[u8; 32], v_type: BitcoinSignVType) -> Bytes {
-        let privkey = Privkey::from_slice(secret_key);
-        let sign = privkey.sign_recoverable(&msg).expect("sign").serialize();
-        assert_eq!(sign.len(), 65);
-        let recid = sign[64];
-
-        let mark = match v_type {
-            BitcoinSignVType::P2PKHUncompressed => recid + 27,
-            BitcoinSignVType::P2PKHCompressed => recid + 31,
-            BitcoinSignVType::SegwitP2SH => recid + 35,
-            BitcoinSignVType::SegwitBech32 => recid + 39,
-        };
-
-        let mut ret = BytesMut::with_capacity(65);
-        ret.put_u8(mark);
-        ret.put(&sign[0..64]);
-        Bytes::from(ret)
-    }
-}
-impl Auth for BitcoinAuth {
-    fn get_pub_key_hash(&self) -> Vec<u8> {
-        BitcoinAuth::get_btc_pub_key_hash(&self.secret_key, self.v_type, self.btc_network)
-    }
-    fn get_algorithm_type(&self) -> u8 {
-        AuthAlgorithmIdType::Bitcoin as u8
-    }
-    fn convert_message(&self, message: &[u8; 32]) -> H256 {
-        BitcoinAuth::btc_convert_message(message)
-    }
-    fn sign(&self, msg: &H256) -> Bytes {
-        BitcoinAuth::btc_sign(msg, &self.secret_key, self.v_type)
-    }
-}
-
-#[derive(Clone)]
-pub struct DogecoinAuth(BitcoinAuth);
-impl DogecoinAuth {
-    pub fn new() -> Box<DogecoinAuth> {
-        Box::new(DogecoinAuth {
-            0: BitcoinAuth::default(),
-        })
-    }
-}
-impl Auth for DogecoinAuth {
-    fn get_pub_key_hash(&self) -> Vec<u8> {
-        self.0.get_pub_key_hash()
-    }
-    fn get_algorithm_type(&self) -> u8 {
-        AuthAlgorithmIdType::Dogecoin as u8
-    }
-    fn convert_message(&self, message: &[u8; 32]) -> H256 {
-        let message_magic = b"\x19Dogecoin Signed Message:\n\x40";
-        let msg_hex = hex::encode(message);
-        assert_eq!(msg_hex.len(), 64);
-
-        let mut temp2: BytesMut = BytesMut::with_capacity(message_magic.len() + msg_hex.len());
-        temp2.put(Bytes::from(message_magic.to_vec()));
-        temp2.put(Bytes::from(hex::encode(message)));
-
-        let msg = calculate_sha256(&temp2);
-        let msg = calculate_sha256(&msg);
-
-        H256::from(msg)
-    }
-    fn sign(&self, msg: &H256) -> Bytes {
-        self.0.sign(msg)
-    }
-}
-
-#[derive(Clone)]
-pub struct LitecoinAuth {
-    // whether to use official tools to sign messages
-    pub official: bool,
-    // Use raw [u8; 32] to easily convert this into Privkey and SecretKey
-    pub btc: BitcoinAuth,
-}
-impl LitecoinAuth {
-    pub fn new() -> Box<LitecoinAuth> {
-        Box::new(LitecoinAuth {
-            official: false,
-            btc: BitcoinAuth::default(),
-        })
-    }
-    pub fn new_official(official: bool) -> Box<LitecoinAuth> {
-        let mut auth = Self::new();
-        auth.official = official;
-        auth
-    }
-    pub fn get_privkey(&self) -> Privkey {
-        Privkey::from_slice(&self.btc.secret_key)
-    }
-    pub fn get_btc_private_key(&self) -> bitcoin::PrivateKey {
-        let sk = bitcoin::secp256k1::SecretKey::from_slice(&self.btc.secret_key).unwrap();
-        bitcoin::PrivateKey::new(sk, self.btc.btc_network)
-    }
-}
-impl Auth for LitecoinAuth {
-    fn get_pub_key_hash(&self) -> Vec<u8> {
-        let hash = BitcoinAuth::get_btc_pub_key_hash(
-            &self.btc.secret_key,
-            self.btc.v_type,
-            self.btc.btc_network,
-        );
-        hash
-    }
-    fn get_algorithm_type(&self) -> u8 {
-        AuthAlgorithmIdType::Litecoin as u8
-    }
-    fn convert_message(&self, message: &[u8; 32]) -> H256 {
-        if self.official {
-            return H256::from(message.clone());
-        }
-        let message_magic = b"\x19Litecoin Signed Message:\n\x40";
-        let msg_hex = hex::encode(message);
-        assert_eq!(msg_hex.len(), 64);
-
-        let mut temp2: BytesMut = BytesMut::with_capacity(message_magic.len() + msg_hex.len());
-        temp2.put(Bytes::from(message_magic.to_vec()));
-        temp2.put(Bytes::from(hex::encode(message)));
-
-        let msg = calculate_sha256(&temp2);
-        let msg = calculate_sha256(&msg);
-
-        H256::from(msg)
-    }
-    fn sign(&self, msg: &H256) -> Bytes {
-        if !self.official {
-            return self.btc.sign(msg);
-        }
-        let daemon = LitecoinDaemon::new();
-        let wallet_name = "ckb-auth-test-wallet";
-        let rpc_wallet_argument = format!("-rpcwallet={}", wallet_name);
-        let rpc_wallet_argument = rpc_wallet_argument.as_str();
-        let test_private_key_label = "ckb-auth-test-privkey";
-        let privkey = self.get_btc_private_key();
-        let privkey_wif = privkey.to_wif();
-        let message = hex::encode(msg);
-        // Create a wallet
-        assert!(
-            daemon
-                .get_client_command()
-                .args(vec!["createwallet", wallet_name])
-                .stdout(Stdio::null())
-                .status()
-                .unwrap()
-                .success(),
-            "creating wallet failed"
-        );
-
-        // Import the private key
-        assert!(
-            daemon
-                .get_client_command()
-                .args(vec![
-                    rpc_wallet_argument,
-                    "importprivkey",
-                    &privkey_wif,
-                    test_private_key_label,
-                    "false"
-                ])
-                .stdout(Stdio::null())
-                .status()
-                .unwrap()
-                .success(),
-            "importing private key failed"
-        );
-
-        // Dump the wallet to get address. We found no easier way to get address that work with
-        // signmessage and verifymessage.
-        let wallet_dump = daemon.data_dir.path().join("ckb-auth-test-wallet-dump");
-        let wallet_dump = wallet_dump.to_str().expect("valid file path");
-        assert!(
-            daemon
-                .get_client_command()
-                .args(vec![rpc_wallet_argument, "dumpwallet", wallet_dump])
-                .stdout(Stdio::null())
-                .status()
-                .unwrap()
-                .success(),
-            "dumping wallet failed"
-        );
-
-        // Example dump file line
-        // cQoJiU5ECnVpRqfV5dWKDE2sLQq6516Tja1Hb1GABUV24n7WkqV4 1970-01-01T00:00:01Z label=ckb-auth-test-privkey # addr=mhknqLHQGWDXuLsPdzab8nA4jD3fMdVYS2,QjpdvL4h5jnfaj1uV5ifJNUAYZTTbjgFH5,tltc1qrz8z67vtu38pq2yzqtq7unftmsaueq6a8da5n2,tmweb1qqvx9sdnuzgv0jq3mlhcq4ttwx8haw8wgskegd0w298hqqqpf300msqemjfm7c2v7gt5sl5snf9kr6tygl3t773l6spt4cmuel4d92m038g8qtmlm
-        let mut pubkey = None;
-        let file_content = std::fs::read_to_string(wallet_dump).expect("valid wallet dump file");
-        for line in file_content.lines() {
-            if line.starts_with(&privkey_wif) {
-                for field in line.split_whitespace() {
-                    let prefix = "addr=";
-                    if field.starts_with(prefix) {
-                        let mut addresses = field[prefix.len()..].split(",");
-                        pubkey = addresses.next();
-                        break;
-                    }
-                }
-            }
-        }
-        let pubkey = pubkey.expect("correctly imported private key");
-
-        // Sign the message
-        let output = daemon
-            .get_client_command()
-            .args(vec![rpc_wallet_argument, "signmessage", pubkey, &message])
-            .output()
-            .unwrap();
-        if !output.status.success() {
-            panic!(
-                "signing message failed: status {}, stdout {} stderr {:?}",
-                output.status,
-                std::str::from_utf8(&output.stdout).unwrap_or(&format!("{:?}", &output.stdout)),
-                std::str::from_utf8(&output.stderr).unwrap_or(&format!("{:?}", &output.stderr)),
-            );
-        }
-        let signature_base64 = std::str::from_utf8(&output.stdout).unwrap().trim();
-        use base64::{engine::general_purpose, Engine as _};
-        let signature = general_purpose::STANDARD
-            .decode(signature_base64)
-            .expect("valid output");
-
-        // Verify this signature anyway to make sure nothing is wrong.
-        let verification_output = daemon
-            .get_client_command()
-            .args(vec![
-                rpc_wallet_argument,
-                "verifymessage",
-                pubkey,
-                signature_base64,
-                &message,
-            ])
-            .output()
-            .unwrap();
-        assert!(verification_output.status.success(), "verification failed");
-        let verification_stdout = std::str::from_utf8(&verification_output.stdout)
-            .unwrap()
-            .trim();
-        assert_eq!(verification_stdout, "true", "verification failed");
-
-        signature.into()
-    }
-}
-
-pub struct ProcessGuard(Child);
-
-impl Drop for ProcessGuard {
-    fn drop(&mut self) {
-        // You can check std::thread::panicking() here
-        match self.0.kill() {
-            Err(e) => println!("Could not kill child process: {}", e),
-            Ok(_) => println!("Successfully killed child process"),
-        }
-    }
-}
-
-pub struct LitecoinDaemon {
-    data_dir: tempdir::TempDir,
-    #[allow(dead_code)]
-    process_guard: ProcessGuard,
-    client_executable: String,
-    common_arguments: Vec<String>,
-}
-
-impl LitecoinDaemon {
-    fn new() -> Self {
-        let executable = "litecoind";
-        let client_executable = "litecoin-cli".to_string();
-
-        let data_dir = TempDir::new(executable).expect("get temp directory");
-        let temp_dir = data_dir.path().to_str().expect("path as str");
-        let common_arguments = vec!["-testnet".to_string(), format!("-datadir={}", temp_dir)];
-        // TODO: maybe listen to a random port.
-        let process_guard = ProcessGuard(
-            Command::new(executable)
-                .args(&common_arguments)
-                .arg("-whitelist=1.1.1.1/32")
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .expect("spawn subprocess"),
-        );
-
-        let daemon = Self {
-            data_dir,
-            process_guard,
-            client_executable,
-            common_arguments,
-        };
-
-        let num_of_retries = 10;
-        for i in 1..=num_of_retries {
-            let mut command = daemon.get_client_command();
-            if command.arg("ping").status().expect("run client").success() {
-                break;
-            }
-            if i == num_of_retries {
-                panic!("Unable to connect to the daemon");
-            }
-
-            std::thread::sleep(std::time::Duration::from_secs(1));
-        }
-
-        daemon
-    }
-
-    fn get_client_command(&self) -> Command {
-        let mut command = Command::new(&self.client_executable);
-        command.args(&self.common_arguments).stderr(Stdio::null());
-        command
-    }
-}
-
-#[derive(Clone)]
-pub struct MoneroAuth {
-    // A pair of spend key and view key. Both are needed the final hash to sign use their public
-    // keys.
-    pub key_pair: monero::KeyPair,
-    // Mode used by monero-wallet-cli to sign messages. Valid values are 0 and 1.
-    // Must be 0 if use spend key to sign transaction, 1 if use view key to sign transaction.
-    pub mode: u8,
-    // Network of monero used, necessary to obtain the address.
-    pub network: monero::Network,
-}
-impl MoneroAuth {
-    pub fn new() -> Box<MoneroAuth> {
-        fn get_random_key_pair() -> monero::KeyPair {
-            let mut rng = thread_rng();
-            let mut seed = vec![0; 32];
-            let spend_key = loop {
-                rng.fill(seed.as_mut_slice());
-                if let Ok(key) = monero::PrivateKey::from_slice(&seed) {
-                    break key;
-                }
-            };
-            let view_key = loop {
-                rng.fill(seed.as_mut_slice());
-                if let Ok(key) = monero::PrivateKey::from_slice(&seed) {
-                    break key;
-                }
-            };
-
-            let keypair = monero::KeyPair {
-                view: view_key,
-                spend: spend_key,
-            };
-            keypair
-        }
-
-        let key_pair = get_random_key_pair();
-        let mode = 0;
-        let network = monero::Network::Mainnet;
-        Box::new(MoneroAuth {
-            key_pair,
-            mode,
-            network,
-        })
-    }
-    pub fn get_address(&self) -> String {
-        monero::Address::from_keypair(self.network, &self.key_pair).to_string()
-    }
-    pub fn is_using_spend_key(&self) -> bool {
-        self.mode == 0
-    }
-    pub fn get_pub_key_info(
-        public_spend: &monero::PublicKey,
-        public_view: &monero::PublicKey,
-        use_spend_key: bool,
-    ) -> Vec<u8> {
-        let mut buff = BytesMut::with_capacity(1 + 32 * 2);
-        let mode: u8 = if use_spend_key { 0 } else { 1 };
-        buff.put_u8(mode);
-        buff.put(public_spend.as_bytes());
-        buff.put(public_view.as_bytes());
-        buff.freeze().into()
-    }
-    fn serialize_pub_key_info(&self) -> Vec<u8> {
-        let public_spend = monero::PublicKey::from_private_key(&self.key_pair.spend);
-        let public_view = monero::PublicKey::from_private_key(&self.key_pair.view);
-        let use_spend_key = self.mode == 0;
-        Self::get_pub_key_info(&public_spend, &public_view, use_spend_key)
-    }
-    pub fn get_pub_key_hash(
-        public_spend: &monero::PublicKey,
-        public_view: &monero::PublicKey,
-        use_spend_key: bool,
-    ) -> Vec<u8> {
-        Vec::from(
-            &ckb_hash::blake2b_256(Self::get_pub_key_info(
-                public_spend,
-                public_view,
-                use_spend_key,
-            ))[..20],
-        )
-    }
-}
-impl Auth for MoneroAuth {
-    fn get_pub_key_hash(&self) -> Vec<u8> {
-        let public_spend = monero::PublicKey::from_private_key(&self.key_pair.spend);
-        let public_view = monero::PublicKey::from_private_key(&self.key_pair.view);
-        let use_spend_key = self.mode == 0;
-        Self::get_pub_key_hash(&public_spend, &public_view, use_spend_key)
-    }
-    fn get_algorithm_type(&self) -> u8 {
-        AuthAlgorithmIdType::Monero as u8
-    }
-    fn convert_message(&self, message: &[u8; 32]) -> H256 {
-        H256::from(message.clone())
-    }
-    fn sign(&self, msg: &H256) -> Bytes {
-        let message_hex = hex::encode(msg.as_bytes());
-
-        let address = self.get_address();
-        let spend_key = hex::encode(self.key_pair.spend.to_bytes());
-        let view_key = hex::encode(self.key_pair.view.to_bytes());
-        let password = "pw";
-        // Click below link for instruction on creating a wallet non-interactively
-        // https://monero.stackexchange.com/questions/10385/creating-a-wallet-in-non-interactive-mode-using-monero-wallet-cli
-        let stdin_to_create_wallet = format!(
-            "{}\\\\n{}\\\\n{}\\\\n{}\\\\n{}\\\\n0\\\\nN\\\\n\\\\n",
-            address, spend_key, view_key, password, password,
-        );
-        let wallet_file_name = "ckb-auth-monero-test-wallet";
-        let message_file_name = "ckb-auth-monero-test-message";
-
-        let get_command = |command| {
-            let mut comm = Command::new("bash");
-            println!("Running shell command {command}");
-            comm.arg("-c").arg(command);
-            comm
-        };
-        let output = get_command(format!("for i in {wallet_file_name}* {message_file_name}; do rm -f $i; done; printf {stdin_to_create_wallet} | monero-wallet-cli --offline --generate-from-keys {wallet_file_name}; printf %b $(printf {message_hex} | fold -b2 | sed 's#^#\\\\x#') > {message_file_name}; echo {password} | monero-wallet-cli --offline --wallet-file {wallet_file_name} --password {password} sign {message_file_name}")).output().unwrap();
-        assert!(output.status.success());
-        let signature = std::str::from_utf8(&output.stdout)
-            .unwrap()
-            .lines()
-            .last()
-            .unwrap();
-        assert_eq!(&signature[..5], "SigV2");
-        // Note: must use base58_monero crate here. The output of other
-        // base58 library is imcompatible to monero's implementation of base58.
-        let signature = base58_monero::decode(&signature[5..]).unwrap();
-        assert_eq!(signature.len(), 64);
-
-        let pub_key_info = self.serialize_pub_key_info();
-
-        let mut data = BytesMut::with_capacity(signature.len() + pub_key_info.len());
-        data.put(signature.as_slice());
-        data.put(pub_key_info.as_slice());
-        let bytes = data.freeze();
-        bytes
-    }
-    fn get_sign_size(&self) -> usize {
-        // #define MONERO_DATA_SIZE (MONERO_SIGNATURE_SIZE + 1 + MONERO_PUBKEY_SIZE * 2)
-        64 + 1 + 32 * 2
-    }
-}
-
-pub struct SolanaSignature {
-    pub len: u16,
-    pub signature: Vec<u8>,
-}
-
-#[derive(Clone)]
-pub struct SolanaAuth {
-    pub key_pair: Arc<solana_sdk::signer::keypair::Keypair>,
-}
-impl SolanaAuth {
-    pub fn new() -> Box<SolanaAuth> {
-        let key_pair = solana_sdk::signer::keypair::Keypair::new();
-        let key_pair = Arc::new(key_pair);
-        Box::new(SolanaAuth { key_pair })
-    }
-    pub fn get_pub_key(
-        key_pair: &solana_sdk::signer::keypair::Keypair,
-    ) -> solana_sdk::pubkey::Pubkey {
-        use solana_sdk::signer::EncodableKeypair;
-        key_pair.encodable_pubkey()
-    }
-    pub fn get_pub_key_bytes(key_pair: &solana_sdk::signer::keypair::Keypair) -> Vec<u8> {
-        let pub_key = Self::get_pub_key(key_pair);
-        let pub_key = pub_key.to_bytes();
-        pub_key.into()
-    }
-    pub fn wrap_signature(signature: &[u8]) -> Option<[u8; SOLANA_MAXIMUM_WRAPPED_SIGNATURE_SIZE]> {
-        let len = signature.len();
-        if len > SOLANA_MAXIMUM_UNWRAPPED_SIGNATURE_SIZE {
-            return None;
-        }
-        let len = len as u16;
-        let len_bytes = len.to_le_bytes();
-        let mut data = [0u8; SOLANA_MAXIMUM_WRAPPED_SIGNATURE_SIZE];
-        data[..2].copy_from_slice(len_bytes.as_slice());
-        data[2..(signature.len() + 2)].copy_from_slice(signature);
-        Some(data)
-    }
-    pub fn unwrap_signature(
-        signature: &[u8; SOLANA_MAXIMUM_WRAPPED_SIGNATURE_SIZE],
-    ) -> Option<&[u8]> {
-        let len_bytes: [u8; 2] = std::convert::TryInto::try_into(&signature[0..2]).unwrap();
-        let len = u16::from_le_bytes(len_bytes) as usize;
-        if len > SOLANA_MAXIMUM_UNWRAPPED_SIGNATURE_SIZE {
-            return None;
-        }
-        Some(&signature[2..(2 + len)])
-    }
-}
-impl Auth for SolanaAuth {
-    fn get_pub_key_hash(&self) -> Vec<u8> {
-        let pub_key = Self::get_pub_key_bytes(&self.key_pair);
-        Vec::from(&ckb_hash::blake2b_256(&pub_key)[..20])
-    }
-    fn get_algorithm_type(&self) -> u8 {
-        AuthAlgorithmIdType::Solana as u8
-    }
-    fn convert_message(&self, message: &[u8; 32]) -> H256 {
-        H256::from(message.clone())
-    }
-    fn sign(&self, msg: &H256) -> Bytes {
-        let pub_key = Self::get_pub_key(&self.key_pair);
-        let pub_key_buf = Self::get_pub_key_bytes(&self.key_pair);
-        let base58_msg = bs58::encode(msg.as_bytes()).into_string();
-
-        // May need to run `solana-keygen new`, otherwise the following error will be reported.
-        // Error: Dynamic program error: No default signer found, run "solana-keygen new -o /home/runner/.config/solana/id.json" to create a new one
-        let mut child = Command::new("solana")
-            .args([
-                "transfer",
-                "--from=-",
-                "--output=json",
-                "--dump-transaction-message",
-                "--sign-only",
-                "--blockhash",
-                base58_msg.as_str(),
-                "6dN24Y1wBW66CxLfXbRT9umy1PMed8ZmfMWsghopczFg", // Just a random public key, does not matter
-                "0", // Just a simple amount, does not matter
-            ])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .expect("Spawn subprocess");
-
-        let child_stdin = child.stdin.as_mut().unwrap();
-
-        let _keypair_json = solana_sdk::signer::keypair::write_keypair(&self.key_pair, child_stdin)
-            .expect("Must write keypair");
-        // Close stdin to finish and avoid indefinite blocking
-        // #[allow(dropping_references)]
-        // drop(child_stdin);
-
-        let output = child.wait_with_output().expect("Wait for output");
-        assert!(output.status.success());
-
-        let sign_only_data: solana_cli_output::CliSignOnlyData =
-            serde_json::from_slice(&output.stdout).expect("Deserialize command output");
-        assert_eq!(sign_only_data.blockhash, base58_msg.as_str());
-        assert!(sign_only_data.message.is_some());
-        let signer_prefix = format!("{pub_key}=");
-        let base58_signature = sign_only_data
-            .signers
-            .iter()
-            .find(|signer| signer.starts_with(&signer_prefix))
-            .map(|signer| signer.strip_prefix(&signer_prefix).unwrap());
-        let signature = bs58::decode(base58_signature.unwrap())
-            .into_vec()
-            .expect("base58 decode");
-
-        use base64::{engine::general_purpose, Engine as _};
-        let message = general_purpose::STANDARD
-            .decode(&sign_only_data.message.unwrap())
-            .expect("Decode message");
-
-        let signature: Vec<u8> = signature
-            .iter()
-            .chain(&pub_key_buf)
-            .chain(&message)
-            .map(|x| *x)
-            .collect();
-        let signature: [u8; SOLANA_MAXIMUM_WRAPPED_SIGNATURE_SIZE] =
-            Self::wrap_signature(&signature).expect("Signature size not too large");
-        signature.to_vec().into()
-    }
-    // The "signature" passed to ckb-auth actually contains the message signed by solana,
-    // which in turn contains all the accounts involved and is thus dynamically sized.
-    // We set a maximum length for the message here. The "signature" will be a u16 represents
-    // the signature plus the actual signature. The bytes after the signature will not be used.
-    fn get_sign_size(&self) -> usize {
-        SOLANA_MAXIMUM_WRAPPED_SIGNATURE_SIZE
-    }
-}
-
-#[derive(Clone)]
-pub struct RippleAuth {
-    key: ripple_keypairs::Seed,
-}
-impl RippleAuth {
-    pub fn new() -> Box<Self> {
-        use ripple_keypairs::{Algorithm, Entropy, Seed};
-        Box::new(RippleAuth {
-            key: Seed::new(Entropy::Random, &Algorithm::Secp256k1),
-        })
-    }
-
-    pub fn base58_encode(d: &[u8]) -> String {
-        let alpha =
-            bs58::Alphabet::new(b"rpshnaf39wBUDNEGHJKLM4PQRST7VWXYZ2bcdeCg65jkm8oFqi1tuvAxyz")
-                .expect("generate base58");
-
-        bs58::encode(d).with_alphabet(&alpha).into_string()
-    }
-
-    pub fn base58_decode(s: &str) -> Vec<u8> {
-        let alpha =
-            bs58::Alphabet::new(b"rpshnaf39wBUDNEGHJKLM4PQRST7VWXYZ2bcdeCg65jkm8oFqi1tuvAxyz")
-                .expect("generate base58");
-
-        let hex = bs58::decode(s).with_alphabet(&alpha).into_vec().expect("");
-        hex[1..21].to_vec()
-    }
-
-    pub fn hex_to_address(data: &[u8]) -> String {
-        let data = calculate_sha256(data);
-        let data: [u8; 20] = calculate_ripemd160(&data);
-
-        let mut data = {
-            let mut buf = vec![0u8];
-            buf.extend_from_slice(&data);
-            buf
-        };
-
-        let checksum = calculate_sha256(&calculate_sha256(&data))[..4].to_vec();
-        data.extend_from_slice(&checksum);
-        Self::base58_encode(&data)
-    }
-
-    fn get_hash(data: &[u8]) -> [u8; 20] {
-        calculate_ripemd160(&calculate_sha256(data))
-    }
-
-    fn generate_tx(ckb_sign_msg: &[u8], pubkey: &[u8], sign: Option<&[u8]>) -> Vec<u8> {
-        use hex::decode;
-        assert_eq!(ckb_sign_msg.len(), 20);
-        assert_eq!(pubkey.len(), 33);
-
-        let tx_temp_1: &str =
-            "1200002280000000240000016861D4838D7EA4C680000000000000000000000000005553440000000000";
-        let tx_temp_2: &str = "684000000000002710";
-        let tx_temp_3: &str = "83143E9D4A2B8AA0780F682D136F7A56D6724EF53754";
-
-        let mut padding_zero = 0usize;
-
-        let mut buf = Vec::new();
-        if sign.is_none() {
-            buf.extend_from_slice(&[0x53, 0x54, 0x58, 0x00]);
-        }
-
-        buf.extend_from_slice(&decode(tx_temp_1).unwrap());
-        buf.extend_from_slice(ckb_sign_msg);
-        buf.extend_from_slice(&decode(tx_temp_2).unwrap());
-
-        buf.extend_from_slice(&[0x73, 0x21]);
-        buf.extend_from_slice(pubkey);
-
-        if sign.is_some() {
-            let sign_len = sign.as_ref().unwrap().len();
-            buf.extend_from_slice(&[0x74, sign_len as u8]);
-            buf.extend_from_slice(sign.unwrap());
-
-            padding_zero = 72 - sign_len;
-        }
-
-        buf.extend_from_slice(&[0x81, 0x14]);
-        buf.extend_from_slice(ckb_sign_msg);
-
-        buf.extend_from_slice(&decode(tx_temp_3).unwrap());
-
-        if sign.is_some() {
-            for _ in 0..padding_zero {
-                buf.push(0);
-            }
-            buf.push(padding_zero as u8 + 1);
-        }
-
-        buf
-    }
-
-    pub fn ripple_conver_msg(msg: &[u8; 32]) -> H256 {
-        let msg = Self::get_hash(msg);
-        let mut ret = [0u8; 32];
-        ret[..20].copy_from_slice(&msg);
-        H256::from(ret)
-    }
-}
-impl Auth for RippleAuth {
-    fn get_pub_key_hash(&self) -> Vec<u8> {
-        let (_privkey, pubkey) = self.key.derive_keypair().unwrap();
-        Self::get_hash(&hex::decode(pubkey.to_string()).unwrap()).to_vec()
-    }
-    fn get_algorithm_type(&self) -> u8 {
-        AuthAlgorithmIdType::Ripple as u8
-    }
-    fn convert_message(&self, message: &[u8; 32]) -> H256 {
-        Self::ripple_conver_msg(message)
-    }
-    fn sign(&self, msg: &H256) -> Bytes {
-        let r_msg = &msg.as_bytes()[..20];
-        let (privkey, pubkey) = self.key.derive_keypair().unwrap();
-        let pubkey = hex::decode(pubkey.to_string()).unwrap();
-
-        let sign_msg = Self::generate_tx(&r_msg, &pubkey, None);
-
-        let sign_data = privkey.sign(&sign_msg);
-        let sign_data: Vec<u8> = hex::decode(sign_data.to_string()).unwrap();
-        let sign = Self::generate_tx(&r_msg, &pubkey, Some(&sign_data));
-
-        Bytes::from(sign)
-    }
-    fn get_sign_size(&self) -> usize {
-        225
-    }
-}
-
-#[derive(Clone)]
-pub struct Secp256r1Auth {
-    pub key: Arc<p256::ecdsa::SigningKey>,
-}
-
-impl Secp256r1Auth {
-    pub fn new() -> Box<Secp256r1Auth> {
-        use p256::ecdsa::SigningKey;
-        const SECRET_KEY: [u8; 32] = [
-            0x51, 0x9b, 0x42, 0x3d, 0x71, 0x5f, 0x8b, 0x58, 0x1f, 0x4f, 0xa8, 0xee, 0x59, 0xf4,
-            0x77, 0x1a, 0x5b, 0x44, 0xc8, 0x13, 0x0b, 0x4e, 0x3e, 0xac, 0xca, 0x54, 0xa5, 0x6d,
-            0xda, 0x72, 0xb4, 0x64,
-        ];
-
-        let sk = SigningKey::from_bytes(&SECRET_KEY).unwrap();
-        Box::new(Self { key: Arc::new(sk) })
-    }
-    pub fn get_pub_key(&self) -> p256::ecdsa::VerifyingKey {
-        let pk = self.key.verifying_key();
-        pk
-    }
-    pub fn get_pub_key_bytes(&self) -> Vec<u8> {
-        let pub_key = self.get_pub_key();
-        let encoded_point = pub_key.to_encoded_point(false);
-        let bytes = encoded_point.as_bytes();
-        // The first byte is always 0x04, which is the tag for Uncompressed point.
-        // See https://docs.rs/sec1/latest/sec1/point/enum.Tag.html#variants
-        // Discard it as we always use x, y coordinates to encode pubkey.
-        bytes[1..].to_vec()
-    }
-}
-impl Auth for Secp256r1Auth {
-    fn get_pub_key_hash(&self) -> Vec<u8> {
-        let pub_key = self.get_pub_key_bytes();
-        let hash = ckb_hash::blake2b_256(&pub_key);
-        Vec::from(&hash[..20])
-    }
-    fn get_algorithm_type(&self) -> u8 {
-        AuthAlgorithmIdType::Secp256r1 as u8
-    }
-    fn convert_message(&self, message: &[u8; 32]) -> H256 {
-        H256::from(message.clone())
-    }
-    fn sign(&self, msg: &H256) -> Bytes {
-        use p256::ecdsa::{signature::Signer, Signature};
-
-        let pub_key = self.get_pub_key_bytes();
-        let _hash = calculate_sha256(msg.as_bytes());
-
-        // Note by default, p256 will sign the sha256 hash of the message.
-        // So we don't need to do any hashing here.
-        let signature: Signature = self.key.sign(msg.as_bytes());
-        let signature = signature.to_vec();
-        let signature: Vec<u8> = pub_key.iter().chain(&signature).map(|x| *x).collect();
-
-        signature.into()
-    }
-    fn get_sign_size(&self) -> usize {
-        128
-    }
-}
-
-#[derive(Clone)]
-pub struct CkbMultisigAuth {
-    pub pubkeys_cnt: u8,
-    pub threshold: u8,
-
-    pub pubkey_data: Vec<u8>,
-    pub privkeys: Vec<Privkey>,
-    pub hash: Vec<u8>,
-}
-impl CkbMultisigAuth {
-    pub fn get_mulktisig_size(&self) -> usize {
-        (4 + 20 * self.pubkeys_cnt + 65 * self.threshold) as usize
-    }
-    pub fn generator_key(
-        pubkeys_cnt: u8,
-        threshold: u8,
-        require_first_n: u8,
-    ) -> (Vec<u8>, Vec<Privkey>) {
-        let mut pubkey_data = BytesMut::with_capacity(pubkeys_cnt as usize * 20 + 4);
-        pubkey_data.put_u8(0);
-        pubkey_data.put_u8(require_first_n);
-        pubkey_data.put_u8(threshold);
-        pubkey_data.put_u8(pubkeys_cnt);
-
-        let mut pubkey_hashs: Vec<Privkey> = Vec::new();
-        for _i in 0..pubkeys_cnt {
-            let privkey = Generator::random_privkey();
-            let hash = CKbAuth::get_ckb_pub_key_hash(&privkey);
-            pubkey_hashs.push(privkey);
-            pubkey_data.put(Bytes::from(hash));
-        }
-        (pubkey_data.freeze().to_vec(), pubkey_hashs)
-    }
-
-    pub fn multickb_sign(&self, msg: &H256) -> Bytes {
-        let mut sign_data = BytesMut::with_capacity(self.get_mulktisig_size());
-        sign_data.put(Bytes::from(self.pubkey_data.clone()));
-        let privkey_size = self.privkeys.len();
-        for i in 0..self.threshold {
-            if privkey_size > i as usize {
-                sign_data.put(CKbAuth::ckb_sign(msg, &self.privkeys[i as usize]));
-            } else {
-                sign_data.put(CKbAuth::ckb_sign(msg, &self.privkeys[privkey_size - 1]));
-            }
-        }
-        sign_data.freeze()
-    }
-
-    pub fn new(pubkeys_cnt: u8, threshold: u8, require_first_n: u8) -> Box<CkbMultisigAuth> {
-        let (pubkey_data, privkeys) =
-            CkbMultisigAuth::generator_key(pubkeys_cnt, threshold, require_first_n);
-        let hash = ckb_hash::blake2b_256(&pubkey_data);
-
-        Box::new(CkbMultisigAuth {
-            pubkeys_cnt,
-            threshold,
-            pubkey_data,
-            privkeys,
-            hash: hash[0..20].to_vec(),
-        })
-    }
-}
-impl Auth for CkbMultisigAuth {
-    fn get_pub_key_hash(&self) -> Vec<u8> {
-        self.hash.clone()
-    }
-    fn get_algorithm_type(&self) -> u8 {
-        AuthAlgorithmIdType::CkbMultisig as u8
-    }
-    fn sign(&self, msg: &H256) -> Bytes {
-        self.multickb_sign(msg)
-    }
-    fn get_sign_size(&self) -> usize {
-        self.get_mulktisig_size()
-    }
-}
-
-#[derive(Clone)]
-pub struct SchnorrAuth {
-    pub privkey: secp256k1::SecretKey,
-    pub pubkey: secp256k1::PublicKey,
-}
-impl SchnorrAuth {
-    pub fn new() -> Box<dyn Auth> {
-        let generator: secp256k1::Secp256k1<secp256k1::All> = secp256k1::Secp256k1::new();
-        let mut rng = thread_rng();
-        let (privkey, pubkey) = generator.generate_keypair(&mut rng);
-        Box::new(SchnorrAuth { privkey, pubkey })
-    }
-}
-impl Auth for SchnorrAuth {
-    fn get_pub_key_hash(&self) -> Vec<u8> {
-        let secp: secp256k1::Secp256k1<secp256k1::All> = secp256k1::Secp256k1::gen_new();
-        let key_pair = secp256k1::KeyPair::from_secret_key(&secp, self.privkey);
-        let xonly = secp256k1::XOnlyPublicKey::from_keypair(&key_pair).serialize();
-
-        Vec::from(&ckb_hash::blake2b_256(xonly)[..20])
-    }
-    fn get_algorithm_type(&self) -> u8 {
-        AuthAlgorithmIdType::Schnorr as u8
-    }
-    fn get_sign_size(&self) -> usize {
-        32 + 64
-    }
-    fn sign(&self, msg: &H256) -> Bytes {
-        let secp: secp256k1::Secp256k1<secp256k1::All> = secp256k1::Secp256k1::gen_new();
-        let secp_msg = secp256k1::Message::from_slice(msg.as_bytes()).unwrap();
-        let key_pair = secp256k1::KeyPair::from_secret_key(&secp, self.privkey);
-        let sign = secp.sign_schnorr_no_aux_rand(&secp_msg, &key_pair);
-
-        let mut ret = BytesMut::with_capacity(32 + 64);
-        let xonly = secp256k1::XOnlyPublicKey::from_keypair(&key_pair)
-            .serialize()
-            .to_vec();
-        ret.put(Bytes::from(xonly.clone()));
-        ret.put(Bytes::from(sign.as_ref().to_vec()));
-        ret.freeze()
-    }
-}
-
-#[derive(Clone)]
-struct OwnerLockAuth {}
-impl OwnerLockAuth {
-    fn new() -> Box<dyn Auth> {
-        Box::new(OwnerLockAuth {})
-    }
-}
-impl Auth for OwnerLockAuth {
-    fn get_pub_key_hash(&self) -> Vec<u8> {
-        let hash = CellOutput::calc_data_hash(&ALWAYS_SUCCESS);
-        let hash = hash.as_slice().to_vec();
-        _dbg_print_mem(&hash, "cell hash");
-        hash[0..20].to_vec()
-    }
-    fn get_algorithm_type(&self) -> u8 {
-        AuthAlgorithmIdType::OwnerLock as u8
-    }
-    fn sign(&self, _msg: &H256) -> Bytes {
-        Bytes::from([0; 64].to_vec())
-    }
 }
 
 pub fn gen_tx_scripts_verifier(

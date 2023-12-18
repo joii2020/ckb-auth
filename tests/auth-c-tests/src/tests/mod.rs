@@ -18,11 +18,12 @@ use std::sync::Arc;
 use hex_literal::hex;
 
 use crate::{
-    assert_script_error, auth_builder, auth_program::use_libecc, build_resolved_tx, debug_printer,
-    gen_args, gen_tx, gen_tx_scripts_verifier, gen_tx_with_grouped_args, sign_tx, Auth,
-    AuthAlgorithmIdType, AuthErrorCodeType, BitcoinAuth, BitcoinSignVType, CKbAuth,
-    CkbMultisigAuth, DogecoinAuth, DummyDataLoader, EosAuth, EthereumAuth, LitecoinAuth,
-    SchnorrAuth, TestConfig, TestConfigAuthLockType, TronAuth, MAX_CYCLES,
+    assert_script_error, auth_builder, build_resolved_tx, debug_printer, gen_args, gen_tx,
+    gen_tx_scripts_verifier, gen_tx_with_grouped_args,
+    on_chain_script::{AuthLockScriptType, AuthScriptType},
+    sign_tx, Auth, AuthAlgorithmIdType, AuthErrorCodeType, BitcoinAuth, BitcoinSignVType, CKbAuth,
+    CkbMultisigAuth, DogecoinAuth, DummyDataLoader, EosAuth, EthereumAuth, LitecoinAuth, MultiAuth,
+    MultiAuthItem, SchnorrAuth, TestConfig, TronAuth, MAX_CYCLES,
 };
 
 fn verify_unit(config: &TestConfig) -> Result<u64, ckb_error::Error> {
@@ -66,7 +67,7 @@ fn assert_result_error(res: Result<u64, ckb_error::Error>, des: &str, err_codes:
 fn unit_test_success(auth: &Box<dyn Auth>, run_type: EntryCategoryType) {
     let mut config = TestConfig::new(auth, run_type, 1);
     assert_result_ok(verify_unit(&config), "");
-    config.auth_lock_type = TestConfigAuthLockType::Rust;
+    config.auth_lock_type = AuthLockScriptType::Rust;
     assert_result_ok(verify_unit(&config), "");
 }
 
@@ -332,7 +333,6 @@ fn ripple_verify() {
 
 #[test]
 fn secp256r1_verify() {
-    use_libecc();
     unit_test_common(AuthAlgorithmIdType::Secp256r1);
 }
 
@@ -773,6 +773,33 @@ fn disable_dynamic_lib() {
     let auth = auth_builder(AuthAlgorithmIdType::Ckb, false).unwrap();
     let mut config = TestConfig::new(&auth, EntryCategoryType::Exec, 1);
 
-    config.auth_lock_type = TestConfigAuthLockType::CDisableDl;
+    config.auth_lock_type = AuthLockScriptType::CDisableDl;
+    assert_result_ok(verify_unit(&config), "");
+}
+
+#[test]
+fn multi_auth_lock_same() {
+    let config = MultiAuth::new_config(&[
+        MultiAuthItem::new_by_dl(AuthAlgorithmIdType::Ckb),
+        MultiAuthItem::new_by_dl(AuthAlgorithmIdType::Bitcoin),
+        MultiAuthItem::new_by_dl(AuthAlgorithmIdType::Ethereum),
+    ]);
+
+    assert_result_ok(verify_unit(&config), "");
+}
+
+#[test]
+fn multi_auth_lock_2_auth() {
+    let config = MultiAuth::new_config(&[
+        MultiAuthItem::new_by_dl(AuthAlgorithmIdType::Ckb),
+        MultiAuthItem {
+            auth_id: AuthAlgorithmIdType::Secp256r1,
+            auth: auth_builder(AuthAlgorithmIdType::Secp256r1, false).expect("build secp256r1"),
+            auth_script_type: AuthScriptType::Libecc,
+            entry_category: EntryCategoryType::DynamicLibrary,
+        },
+        MultiAuthItem::new_by_dl(AuthAlgorithmIdType::Ethereum),
+    ]);
+
     assert_result_ok(verify_unit(&config), "");
 }

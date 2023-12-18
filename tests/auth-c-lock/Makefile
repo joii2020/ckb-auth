@@ -21,7 +21,8 @@ BUILDER_DOCKER := nervos/ckb-riscv-gnu-toolchain@sha256:d3f649ef8079395eb25a21ce
 
 all: \
 	build/auth_c_lock \
-	build/auth_c_lock_disable_dl
+	build/auth_c_lock_disable_dl \
+	build/multi_auth_c_lock
 
 all-via-docker:
 	docker run --platform linux/amd64 --rm -v `pwd`:/code ${BUILDER_DOCKER} bash -c "cd /code && make -f tests/auth-c-lock/Makefile all"
@@ -36,5 +37,15 @@ build/auth_c_lock_disable_dl: tests/auth-c-lock/auth_c_lock.c c/ckb_auth.h
 	$(OBJCOPY) --only-keep-debug $@ $@.debug
 	$(OBJCOPY) --strip-debug --strip-all $@
 
+# Libecc will be loaded during the test, so the dl cache is increased here.
+build/multi_auth_c_lock: tests/auth-c-lock/multi_auth_c_lock.c c/ckb_auth.h
+	$(CC) $(AUTH_CFLAGS) $(LDFLAGS) -DCKB_AUTH_DL_BUFF_SIZE=0x96000 -o $@ $^
+	$(OBJCOPY) --only-keep-debug $@ $@.debug
+	$(OBJCOPY) --strip-debug --strip-all $@
+
 clean:
-	rm -rf build/auth_c_lock
+	rm -rf \
+		build/auth_c_lock \
+		build/auth_c_lock.debug \
+		build/multi_auth_c_lock \
+		build/multi_auth_c_lock.debug
