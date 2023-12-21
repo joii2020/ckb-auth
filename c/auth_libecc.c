@@ -16,11 +16,10 @@
 #undef CKB_SUCCESS
 // clang-format on
 
-
 int validate_signature_secp256r1(void *prefilled_data, const uint8_t *sig,
-                              size_t sig_len, const uint8_t *msg,
-                              size_t msg_len, uint8_t *output,
-                              size_t *output_len) {
+                                 size_t sig_len, const uint8_t *msg,
+                                 size_t msg_len, uint8_t *output,
+                                 size_t *output_len) {
     int err = 0;
 
     if (*output_len < AUTH160_SIZE) {
@@ -29,9 +28,11 @@ int validate_signature_secp256r1(void *prefilled_data, const uint8_t *sig,
     CHECK2(msg_len == BLAKE2B_BLOCK_SIZE, ERROR_INVALID_ARG);
     CHECK2(sig_len == SECP256R1_DATA_SIZE, ERROR_INVALID_ARG);
     const uint8_t *pub_key_ptr = sig;
-    const uint8_t *signature_ptr =  pub_key_ptr + SECP256R1_PUBKEY_SIZE;
+    const uint8_t *signature_ptr = pub_key_ptr + SECP256R1_PUBKEY_SIZE;
 
-    CHECK(secp256r1_verify_signature(signature_ptr, SECP256R1_SIGNATURE_SIZE, pub_key_ptr, SECP256R1_PUBKEY_SIZE, msg, msg_len ));
+    CHECK(secp256r1_verify_signature(signature_ptr, SECP256R1_SIGNATURE_SIZE,
+                                     pub_key_ptr, SECP256R1_PUBKEY_SIZE, msg,
+                                     msg_len));
 
     blake2b_state ctx;
     uint8_t pubkey_hash[BLAKE2B_BLOCK_SIZE] = {0};
@@ -74,7 +75,6 @@ static int verify(uint8_t *pubkey_hash, const uint8_t *sig, uint32_t sig_len,
 exit:
     return err;
 }
-
 
 // dynamic linking entry
 __attribute__((visibility("default"))) int ckb_auth_validate(

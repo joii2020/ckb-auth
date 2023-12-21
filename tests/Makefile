@@ -165,6 +165,21 @@ install-cardano-tools:
 	tar xvf `basename -- $(cardano_tools_url)` -C bin
 	rm -rf cardano-*
 
+format-c-code: \
+			../c/auth.c \
+			../c/auth_libecc.c \
+			../c/ckb_auth.h \
+			../c/ripple.h \
+			auth-c-lock/auth_c_lock.c
+	clang-format --style="{BasedOnStyle: google, IndentWidth: 4, SortIncludes: false}" -i $^
+
+format-rust-code:
+	cd ../ckb-auth-rs && cargo fmt --all
+	cd ../tools/ckb-auth-cli && cargo fmt --all
+	cd auth-c-tests && cargo fmt --all
+	cd auth-rust-lock && cargo fmt --all
+	cd auth-spawn-tests && cargo fmt --all
+
 bin:
 	mkdir -p bin
 
