@@ -90,6 +90,12 @@ build/auth_libecc: c/auth_libecc.c $(LIBECC_OPTIMIZED_FILES)
 fmt:
 	clang-format -i -style="{BasedOnStyle: Google, IndentWidth: 4}" c/*.c c/*.h
 
+copy_on_chain_script: build/secp256k1_data_info_20210801.h build/auth build/auth_libecc
+	mkdir -p on_chain_script
+	cp build/auth ckb-auth-rs/on_chain_script/
+	cp build/auth_libecc ckb-auth-rs/on_chain_script/
+	cp build/secp256k1_data_20210801 ckb-auth-rs/on_chain_script/
+
 clean:
 	rm -rf build/*.debug
 	rm -f build/auth build/auth_libecc build/auth_c_lock build/auth-rust-demo
