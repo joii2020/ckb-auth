@@ -25,7 +25,9 @@ use serde::{Deserialize, Serialize};
 use sha3::{Digest, Keccak256};
 use std::{collections::HashMap, convert::TryInto, mem::size_of, process::Stdio, result, vec};
 
-use ckb_auth_rs::{AuthAlgorithmIdType, CkbAuthType, EntryCategoryType};
+use ckb_auth_rs::{
+    load_library::SECP256K1_DATA_BIN, AuthAlgorithmIdType, CkbAuthType, EntryCategoryType,
+};
 use lazy_static::lazy_static;
 use std::{
     process::{Child, Command},
@@ -45,23 +47,18 @@ pub const SOLANA_MAXIMUM_WRAPPED_SIGNATURE_SIZE: usize =
     SOLANA_MAXIMUM_UNWRAPPED_SIGNATURE_SIZE + 2;
 
 lazy_static! {
-    pub static ref ORIGINAL_AUTH_PROGRAM: Bytes =
-        Bytes::from(&include_bytes!("../../../build/auth")[..]);
-    pub static ref LIBECC_AUTH_PROGRAM: Bytes =
-        Bytes::from(&include_bytes!("../../../build/auth_libecc")[..]);
     pub static ref AUTH_C_LOCK: Bytes =
         Bytes::from(&include_bytes!("../../../build/auth_c_lock")[..]);
     pub static ref AUTH_RUST_LOCK: Bytes =
         Bytes::from(&include_bytes!("../../../build/auth-rust-demo")[..]);
     pub static ref AUTH_C_LOCK_DISABLE_DL: Bytes =
         Bytes::from(&include_bytes!("../../../build/auth_c_lock_disable_dl")[..]);
-    pub static ref SECP256K1_DATA_BIN: Bytes =
-        Bytes::from(&include_bytes!("../../../build/secp256k1_data_20210801")[..]);
     pub static ref ALWAYS_SUCCESS: Bytes =
         Bytes::from(&include_bytes!("../../../build/always_success")[..]);
 }
 
 pub mod auth_program {
+    use ckb_auth_rs::load_library::{AUTH_LIBECC_ON_CHAIN_SCRIPT, AUTH_ON_CHAIN_SCRIPT};
     use ckb_types::bytes::Bytes;
     use ref_thread_local::ref_thread_local;
     use ref_thread_local::RefThreadLocal;
@@ -76,10 +73,10 @@ pub mod auth_program {
         static managed PROGRAM_TO_USE: AuthProgramType = AuthProgramType::Original;
     }
 
-    pub fn get_auth_program() -> &'static Bytes {
+    pub fn get_auth_program() -> Bytes {
         match *PROGRAM_TO_USE.borrow() {
-            AuthProgramType::Original => &crate::ORIGINAL_AUTH_PROGRAM,
-            AuthProgramType::Libecc => &crate::LIBECC_AUTH_PROGRAM,
+            AuthProgramType::Original => Bytes::from_static(&AUTH_ON_CHAIN_SCRIPT),
+            AuthProgramType::Libecc => Bytes::from_static(&AUTH_LIBECC_ON_CHAIN_SCRIPT),
         }
     }
 
@@ -408,7 +405,8 @@ fn append_cells_deps<R: Rng>(
     );
     let sighash_dl_out_point = append_cell_deps(dummy, rng, &auth_program::get_auth_program());
     let always_success_out_point = append_cell_deps(dummy, rng, &ALWAYS_SUCCESS);
-    let secp256k1_data_out_point = append_cell_deps(dummy, rng, &SECP256K1_DATA_BIN);
+    let secp256k1_data_out_point =
+        append_cell_deps(dummy, rng, &Bytes::from_static(&SECP256K1_DATA_BIN));
 
     // setup default tx builder
     let dummy_capacity = Capacity::shannons(42);

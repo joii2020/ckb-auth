@@ -4,6 +4,7 @@
 all: \
 	build-auth-lock \
 	c-tests \
+	check_bin_hash \
 	clean-c-tests \
 	rust-demo-tests \
 	clean-rust-demo-tests \
@@ -74,6 +75,9 @@ spawn-tests:
 
 clean-spawn-tests:
 	rm -rf auth-spawn-tests/target
+
+check_bin_hash:
+	cd auth-c-tests && cargo run --bin check_auth_hash
 
 install-all: \
 	install-ckb-tools \

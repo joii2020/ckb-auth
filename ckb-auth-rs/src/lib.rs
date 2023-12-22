@@ -14,6 +14,8 @@ mod ckb_auth_dl;
 #[cfg(target_arch = "riscv64")]
 mod generate_sighash_all;
 
+pub mod load_library;
+
 #[cfg(target_arch = "riscv64")]
 pub use crate::generate_sighash_all::generate_sighash_all;
 
